@@ -2,7 +2,12 @@
 
 import asyncio
 from api import get_candles
-from config import TIMEFRAME_4H, TIMEFRAME_1H, CANDLE_COUNT
+from structure import support_resistance, liquidity_sweep
+from config import (
+    TIMEFRAME_4H,
+    TIMEFRAME_1H,
+    CANDLE_COUNT
+)
 
 
 def analyze(symbol: str):
@@ -16,18 +21,41 @@ def analyze(symbol: str):
     last_4h = candles_4h[-1]
     last_1h = candles_1h[-1]
 
-    # Simple trend logic (placeholder but valid)
+    # -------- TREND BIAS --------
     if last_1h["close"] > last_4h["open"]:
+        bias = "BUY"
+    elif last_1h["close"] < last_4h["open"]:
+        bias = "SELL"
+    else:
+        return {"signal": "NO_TRADE"}
+
+    # -------- STRUCTURE --------
+    support, resistance = support_resistance(candles_1h)
+    liquidity = liquidity_sweep(candles_1h)
+
+    price = last_1h["close"]
+
+    # -------- ENTRY LOGIC --------
+    if bias == "BUY" and liquidity == "BUY_LIQUIDITY" and price > support:
+        stop_loss = price - support
+        take_profit = price + (stop_loss * 2)
+
         return {
             "signal": "BUY",
-            "stop_loss": abs(last_1h["close"] - last_1h["open"])
+            "entry": price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit
         }
 
-    if last_1h["close"] < last_4h["open"]:
+    if bias == "SELL" and liquidity == "SELL_LIQUIDITY" and price < resistance:
+        stop_loss = resistance - price
+        take_profit = price - (stop_loss * 2)
+
         return {
             "signal": "SELL",
-            "stop_loss": abs(last_1h["open"] - last_1h["close"])
+            "entry": price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit
         }
 
     return {"signal": "NO_TRADE"}
-
