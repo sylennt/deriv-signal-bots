@@ -1,31 +1,26 @@
 # main.py
 
-import asyncio
-from config import SYMBOL, BALANCE, RISK_PERCENT
-from api import connect
 from strategy import analyze
-from risk import calculate_position
+from telegram_alert import send_alert
+from formatter import format_signal
 
+SYMBOLS = [
+    "R_100",
+    "R_75",
+    "R_50",
+    "BOOM1000",
+    "CRASH1000"
+]
 
 def run():
-    asyncio.run(connect())
+    for symbol in SYMBOLS:
+        trade = analyze(symbol)
 
-    trade = analyze(SYMBOL)
-
-    if trade["signal"] == "NO_TRADE":
-        print("No trade signal.")
-        return
-
-    position_size = calculate_position(
-        BALANCE,
-        RISK_PERCENT,
-        trade["stop_loss"]
-    )
-
-    print("Signal:", trade["signal"])
-    print("Position Size:", position_size)
+        if trade["signal"] != "NO_TRADE":
+            message = format_signal(symbol, trade)
+            send_alert(message)
+            print(f"Alert sent for {symbol}")
 
 
 if __name__ == "__main__":
     run()
-
