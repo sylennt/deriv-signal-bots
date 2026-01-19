@@ -1,24 +1,26 @@
-# api.py
+import websocket
+import json
 
-from deriv_api import DerivAPI
-from config import APP_ID, API_TOKEN
-
-api = DerivAPI(app_id=APP_ID)
+DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
 
-async def connect():
-    await api.authorize(API_TOKEN)
+def get_candles(symbol, granularity, count=200):
+    ws = websocket.create_connection(DERIV_WS_URL)
 
-
-async def get_candles(symbol: str, timeframe: int, count: int = 100):
-    response = await api.ticks_history({
+    payload = {
         "ticks_history": symbol,
         "adjust_start_time": 1,
         "count": count,
         "end": "latest",
-        "style": "candles",
-        "granularity": timeframe
-    })
+        "granularity": granularity,
+        "style": "candles"
+    }
+
+    ws.send(json.dumps(payload))
+    response = json.loads(ws.recv())
+    ws.close()
+
+    if "candles" not in response:
+        raise Exception(f"Deriv API error: {response}")
 
     return response["candles"]
-
