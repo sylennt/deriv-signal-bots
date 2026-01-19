@@ -1,38 +1,49 @@
-from api import get_candles
 from structure import support_resistance, liquidity_sweep
 
+def analyze(candles):
+    if not candles or len(candles) < 50:
+        return {
+            "signal": "NO_TRADE",
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "reason": "Not enough data"
+        }
 
-def analyze(symbol, balance=100, risk_percent=1):
-    candles_4h = get_candles(symbol, 14400)
-    candles_1h = get_candles(symbol, 3600)
-    candles_15m = get_candles(symbol, 900)
+    sr = support_resistance(candles)
+    liquidity = liquidity_sweep(candles)
 
-    if not candles_4h or not candles_1h or not candles_15m:
-        return None
+    if not sr or not liquidity:
+        return {
+            "signal": "NO_TRADE",
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "reason": "No structure"
+        }
 
-    support, resistance = support_resistance(candles_1h)
-    sweep = liquidity_sweep(candles_15m)
+    if liquidity["type"] == "BUY":
+        return {
+            "signal": "BUY",
+            "entry": liquidity["price"],
+            "stop_loss": sr["support"],
+            "take_profit": sr["resistance"],
+            "reason": "Liquidity sweep + structure"
+        }
 
-    if sweep is None:
-        return None
-
-    entry = float(candles_15m[-1]["close"])
-
-    if sweep == "BUY":
-        sl = support
-        tp = entry + (entry - sl) * 2
-    else:
-        sl = resistance
-        tp = entry - (sl - entry) * 2
-
-    risk_amount = balance * (risk_percent / 100)
-    lot_size = round(risk_amount / abs(entry - sl), 2)
+    if liquidity["type"] == "SELL":
+        return {
+            "signal": "SELL",
+            "entry": liquidity["price"],
+            "stop_loss": sr["resistance"],
+            "take_profit": sr["support"],
+            "reason": "Liquidity sweep + structure"
+        }
 
     return {
-        "symbol": symbol,
-        "direction": sweep,
-        "entry": round(entry, 2),
-        "sl": round(sl, 2),
-        "tp": round(tp, 2),
-        "lot_size": lot_size
+        "signal": "NO_TRADE",
+        "entry": None,
+        "stop_loss": None,
+        "take_profit": None,
+        "reason": "Conditions not met"
     }
