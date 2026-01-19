@@ -1,3 +1,5 @@
-deriv-api
 requests
+websocket-client
+pandas
+numpy
 
