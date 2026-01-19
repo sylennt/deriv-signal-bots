@@ -1,61 +1,38 @@
-# strategy.py
-
-import asyncio
 from api import get_candles
 from structure import support_resistance, liquidity_sweep
-from config import (
-    TIMEFRAME_4H,
-    TIMEFRAME_1H,
-    CANDLE_COUNT
-)
 
 
-def analyze(symbol: str):
-    candles_4h = asyncio.run(
-        get_candles(symbol, TIMEFRAME_4H, CANDLE_COUNT)
-    )
-    candles_1h = asyncio.run(
-        get_candles(symbol, TIMEFRAME_1H, CANDLE_COUNT)
-    )
+def analyze(symbol, balance=100, risk_percent=1):
+    candles_4h = get_candles(symbol, 14400)
+    candles_1h = get_candles(symbol, 3600)
+    candles_15m = get_candles(symbol, 900)
 
-    last_4h = candles_4h[-1]
-    last_1h = candles_1h[-1]
+    if not candles_4h or not candles_1h or not candles_15m:
+        return None
 
-    # -------- TREND BIAS --------
-    if last_1h["close"] > last_4h["open"]:
-        bias = "BUY"
-    elif last_1h["close"] < last_4h["open"]:
-        bias = "SELL"
-    else:
-        return {"signal": "NO_TRADE"}
-
-    # -------- STRUCTURE --------
     support, resistance = support_resistance(candles_1h)
-    liquidity = liquidity_sweep(candles_1h)
+    sweep = liquidity_sweep(candles_15m)
 
-    price = last_1h["close"]
+    if sweep is None:
+        return None
 
-    # -------- ENTRY LOGIC --------
-    if bias == "BUY" and liquidity == "BUY_LIQUIDITY" and price > support:
-        stop_loss = price - support
-        take_profit = price + (stop_loss * 2)
+    entry = float(candles_15m[-1]["close"])
 
-        return {
-            "signal": "BUY",
-            "entry": price,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit
-        }
+    if sweep == "BUY":
+        sl = support
+        tp = entry + (entry - sl) * 2
+    else:
+        sl = resistance
+        tp = entry - (sl - entry) * 2
 
-    if bias == "SELL" and liquidity == "SELL_LIQUIDITY" and price < resistance:
-        stop_loss = resistance - price
-        take_profit = price - (stop_loss * 2)
+    risk_amount = balance * (risk_percent / 100)
+    lot_size = round(risk_amount / abs(entry - sl), 2)
 
-        return {
-            "signal": "SELL",
-            "entry": price,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit
-        }
-
-    return {"signal": "NO_TRADE"}
+    return {
+        "symbol": symbol,
+        "direction": sweep,
+        "entry": round(entry, 2),
+        "sl": round(sl, 2),
+        "tp": round(tp, 2),
+        "lot_size": lot_size
+    }
