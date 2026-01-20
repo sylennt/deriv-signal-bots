@@ -20,6 +20,8 @@ def run():
             message = format_signal(symbol, trade)
             send_alert(message)
             print(f"Alert sent for {symbol}")
+            trade = analyze(candles)
+            print("TRADE RESULT:", trade)
 
 
 if __name__ == "__main__":
