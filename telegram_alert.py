@@ -3,34 +3,27 @@ import requests
 
 def send_telegram_alert(trade):
 
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    CHAT_ID = os.getenv("CHAT_ID")
+    bot_token = os.getenv("BOT_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
 
-    print("BOT_TOKEN inside function:", BOT_TOKEN)
-    print("CHAT_ID inside function:", CHAT_ID)
-
-    if not BOT_TOKEN or not CHAT_ID:
+    if not bot_token or not chat_id:
         print("Missing BOT_TOKEN or CHAT_ID")
         return
 
-    message = f"""
-Signal: {trade['signal']}
-Entry: {trade['entry']}
-Stop Loss: {trade['stop_loss']}
-Take Profit: {trade['take_profit']}
-Reason: {trade['reason']}
-"""
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    response = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        }
+    message = (
+        f"Signal: {trade['signal']}\n"
+        f"Entry: {trade['entry']}\n"
+        f"Stop Loss: {trade['stop_loss']}\n"
+        f"Take Profit: {trade['take_profit']}\n"
+        f"Reason: {trade['reason']}"
     )
 
-    print("Telegram response status:", response.status_code)
-    print("Telegram response text:", response.text)
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
+    response = requests.post(url, data={
+        "chat_id": chat_id,
+        "text": message
+    })
+
+    print("Status:", response.status_code)
+    print("Response:", response.text)
