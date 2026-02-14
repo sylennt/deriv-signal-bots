@@ -4,23 +4,27 @@ from structure import support_resistance, liquidity_sweep
 
 def analyze(symbol):
 
-    # Get 15m candles for entry logic
     candles = get_candles(symbol, 900)
 
     if not candles or len(candles) < 50:
-        return {
-            "signal": "NO_TRADE",
-            "reason": "Not enough data"
-        }
+        print(f"No setup for {symbol}")
+        return None
 
     sr = support_resistance(candles)
     liquidity = liquidity_sweep(candles)
 
-    if not sr or not liquidity:
-        return {
-            "signal": "NO_TRADE",
-            "reason": "No structure or liquidity sweep"
-        }
+    # Ensure liquidity is valid dictionary
+    if not isinstance(liquidity, dict):
+        print(f"No liquidity sweep for {symbol}")
+        return None
+
+    if "type" not in liquidity or "price" not in liquidity:
+        print(f"Invalid liquidity format for {symbol}")
+        return None
+
+    if not sr or "support" not in sr or "resistance" not in sr:
+        print(f"No structure for {symbol}")
+        return None
 
     entry = liquidity["price"]
 
@@ -33,20 +37,20 @@ def analyze(symbol):
         take_profit = sr["support"]
 
     else:
-        return {
-            "signal": "NO_TRADE",
-            "reason": "Invalid liquidity type"
-        }
+        print(f"No valid signal for {symbol}")
+        return None
 
-    # Risk reward check
     risk = abs(entry - stop_loss)
     reward = abs(take_profit - entry)
 
-    if risk == 0 or reward / risk < 1.5:
-        return {
-            "signal": "NO_TRADE",
-            "reason": "Bad RR"
-        }
+    if risk == 0:
+        return None
+
+    rr = reward / risk
+
+    if rr < 1.5:
+        print(f"Bad RR for {symbol}")
+        return None
 
     return {
         "symbol": symbol,
