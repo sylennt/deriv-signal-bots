@@ -10,7 +10,10 @@ def send_telegram_alert(trade):
         print("Missing BOT_TOKEN or CHAT_ID")
         return
 
+    symbol = trade.get("symbol", "UNKNOWN")
+
     message = (
+        f"📊 Pair: {symbol}\n"
         f"Signal: {trade['signal']}\n"
         f"Entry: {trade['entry']}\n"
         f"Stop Loss: {trade['stop_loss']}\n"
