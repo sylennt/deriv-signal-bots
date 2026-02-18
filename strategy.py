@@ -1,143 +1,150 @@
 import pandas as pd
-import numpy as np
 from api import get_candles
 
 
-# ===============================
+# ==========================================
 # Helper Functions
-# ===============================
+# ==========================================
 
 def to_df(candles):
     df = pd.DataFrame(candles)
-    df = df.rename(columns={
+    df.rename(columns={
         "open": "Open",
         "high": "High",
         "low": "Low",
         "close": "Close"
-    })
+    }, inplace=True)
     return df
 
 
-def trend_direction(df):
-    ema_20 = df["Close"].ewm(span=20).mean()
-    ema_50 = df["Close"].ewm(span=50).mean()
+def detect_trend(df):
+    """
+    Simple structure trend detection using HH/LL logic
+    """
+    recent_highs = df["High"].iloc[-5:]
+    recent_lows = df["Low"].iloc[-5:]
 
-    if ema_20.iloc[-1] > ema_50.iloc[-1]:
+    if recent_highs.is_monotonic_increasing:
         return "UP"
-    elif ema_20.iloc[-1] < ema_50.iloc[-1]:
+
+    if recent_lows.is_monotonic_decreasing:
         return "DOWN"
-    else:
-        return "RANGE"
+
+    return "RANGE"
 
 
 def liquidity_sweep(df):
+    """
+    Detects stop-hunt above/below recent range
+    """
     recent_high = df["High"].iloc[-6:-1].max()
     recent_low = df["Low"].iloc[-6:-1].min()
 
-    last_candle = df.iloc[-1]
-
-    if last_candle["Low"] < recent_low:
-        return "BUY"
-    elif last_candle["High"] > recent_high:
-        return "SELL"
-    else:
-        return None
-
-
-def momentum_confirmation(df, direction):
+    last_high = df["High"].iloc[-1]
+    last_low = df["Low"].iloc[-1]
     last_close = df["Close"].iloc[-1]
-    prev_close = df["Close"].iloc[-2]
 
-    if direction == "BUY" and last_close > prev_close:
-        return True
-    if direction == "SELL" and last_close < prev_close:
-        return True
+    # Sweep below and close back above = BUY setup
+    if last_low < recent_low and last_close > recent_low:
+        return "BUY"
 
-    return False
+    # Sweep above and close back below = SELL setup
+    if last_high > recent_high and last_close < recent_high:
+        return "SELL"
 
-
-def calculate_rr(entry, sl, tp):
-    risk = abs(entry - sl)
-    reward = abs(tp - entry)
-
-    if risk == 0:
-        return 0
-
-    return reward / risk
+    return None
 
 
-# ===============================
-# Main Strategy Logic
-# ===============================
+# ==========================================
+# Main Strategy
+# ==========================================
 
 def analyze(symbol):
 
     try:
-        candles_4h = get_candles(symbol, 14400)
         candles_1h = get_candles(symbol, 3600)
         candles_15m = get_candles(symbol, 900)
         candles_5m = get_candles(symbol, 300)
+
+        df_1h = to_df(candles_1h)
+        df_15m = to_df(candles_15m)
+        df_5m = to_df(candles_5m)
 
     except Exception as e:
         print(f"Data error for {symbol}: {e}")
         return {"symbol": symbol, "signal": "NO_TRADE"}
 
-    df_4h = to_df(candles_4h)
-    df_1h = to_df(candles_1h)
-    df_15m = to_df(candles_15m)
-    df_5m = to_df(candles_5m)
+    # 1️⃣ Higher timeframe trend
+    trend = detect_trend(df_1h)
 
-    trend_4h = trend_direction(df_4h)
-    trend_1h = trend_direction(df_1h)
-
-    if trend_4h == "RANGE":
-        print(f"No clear HTF trend for {symbol}")
-        return {"symbol": symbol, "signal": "NO_TRADE"}
-
+    # 2️⃣ Liquidity sweep on 15m
     sweep = liquidity_sweep(df_15m)
 
     if not sweep:
         print(f"No liquidity sweep for {symbol}")
         return {"symbol": symbol, "signal": "NO_TRADE"}
 
-    score = 0
-
-    # 4H Bias alignment
-    if sweep == "BUY" and trend_4h == "UP":
-        score += 1
-    if sweep == "SELL" and trend_4h == "DOWN":
-        score += 1
-
-    # 1H confirmation (soft filter)
-    if sweep == "BUY" and trend_1h == "UP":
-        score += 1
-    if sweep == "SELL" and trend_1h == "DOWN":
-        score += 1
-
-    # 5M momentum confirmation
-    if momentum_confirmation(df_5m, sweep):
-        score += 1
-
-    if score < 2:
-        print(f"Setup too weak for {symbol}")
+    # 3️⃣ Structure alignment
+    if sweep == "BUY" and trend != "UP":
+        print(f"Structure mismatch for {symbol}")
         return {"symbol": symbol, "signal": "NO_TRADE"}
 
+    if sweep == "SELL" and trend != "DOWN":
+        print(f"Structure mismatch for {symbol}")
+        return {"symbol": symbol, "signal": "NO_TRADE"}
+
+    # 4️⃣ Entry from 5m confirmation candle
     entry = df_5m["Close"].iloc[-1]
 
+    # ==========================================
+    # SL & TP Calculation (Strict Direction Safe)
+    # ==========================================
+
     if sweep == "BUY":
-        sl = df_15m["Low"].iloc[-6:-1].min()
-        tp = entry + (entry - sl) * 2   # 1:2 RR
-    else:
-        sl = df_15m["High"].iloc[-6:-1].max()
-        tp = entry - (sl - entry) * 2   # 1:2 RR
 
-    rr = calculate_rr(entry, sl, tp)
+        sl_candidate = df_15m["Low"].iloc[-6:-1].min()
 
-    if rr < 2:
-        print(f"RR too small for {symbol}")
+        # SL must be below entry
+        if sl_candidate >= entry:
+            print(f"Invalid BUY structure for {symbol}")
+            return {"symbol": symbol, "signal": "NO_TRADE"}
+
+        sl = sl_candidate
+        risk = entry - sl
+        tp = entry + (risk * 2)  # 1:2 RR
+
+
+    elif sweep == "SELL":
+
+        sl_candidate = df_15m["High"].iloc[-6:-1].max()
+
+        # SL must be above entry
+        if sl_candidate <= entry:
+            print(f"Invalid SELL structure for {symbol}")
+            return {"symbol": symbol, "signal": "NO_TRADE"}
+
+        sl = sl_candidate
+        risk = sl - entry
+        tp = entry - (risk * 2)  # 1:2 RR
+
+
+    # ==========================================
+    # Final Direction Validation
+    # ==========================================
+
+    if sweep == "BUY" and not (sl < entry < tp):
+        print(f"Directional mismatch for {symbol}")
         return {"symbol": symbol, "signal": "NO_TRADE"}
 
-    print(f"Valid setup for {symbol}")
+    if sweep == "SELL" and not (tp < entry < sl):
+        print(f"Directional mismatch for {symbol}")
+        return {"symbol": symbol, "signal": "NO_TRADE"}
+
+    # ==========================================
+    # Valid Signal
+    # ==========================================
+
+    print(f"Valid {sweep} setup for {symbol}")
 
     return {
         "symbol": symbol,
@@ -145,7 +152,5 @@ def analyze(symbol):
         "entry": round(entry, 2),
         "stop_loss": round(sl, 2),
         "take_profit": round(tp, 2),
-        "rr": round(rr, 2),
-        "reason": f"{trend_4h} trend + liquidity sweep + momentum confirmation"
+        "reason": f"{trend} trend + liquidity sweep confirmation"
     }
-
