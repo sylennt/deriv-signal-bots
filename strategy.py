@@ -3,121 +3,192 @@ import numpy as np
 from api import get_candles
 
 
-# ==============================
-# Helper Functions
-# ==============================
+# ===============================
+# Utility
+# ===============================
 
 def to_df(candles):
     df = pd.DataFrame(candles)
-    df["open"] = df["open"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df["close"] = df["close"].astype(float)
+    df = df.rename(columns={
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close"
+    })
+    df = df.astype(float)
     return df
 
 
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
+# ===============================
+# Structure Detection
+# ===============================
 
 def detect_trend(df):
-    df["ema50"] = ema(df["close"], 50)
-    df["ema200"] = ema(df["close"], 200)
+    sma_fast = df["Close"].rolling(20).mean()
+    sma_slow = df["Close"].rolling(50).mean()
 
-    if df["ema50"].iloc[-1] > df["ema200"].iloc[-1]:
+    if sma_fast.iloc[-1] > sma_slow.iloc[-1]:
         return "BULLISH"
-    elif df["ema50"].iloc[-1] < df["ema200"].iloc[-1]:
+    elif sma_fast.iloc[-1] < sma_slow.iloc[-1]:
         return "BEARISH"
     else:
         return "RANGE"
 
 
-def break_of_structure(df):
-    last_high = df["high"].iloc[-2]
-    last_low = df["low"].iloc[-2]
-    current_close = df["close"].iloc[-1]
+def liquidity_sweep(df):
+    recent_high = df["High"].iloc[-10:-1].max()
+    recent_low = df["Low"].iloc[-10:-1].min()
 
-    if current_close > last_high:
-        return "BULLISH_BOS"
-    elif current_close < last_low:
-        return "BEARISH_BOS"
-    else:
-        return None
+    last_high = df["High"].iloc[-1]
+    last_low = df["Low"].iloc[-1]
+    last_close = df["Close"].iloc[-1]
 
+    # Sweep high and close back inside
+    if last_high > recent_high and last_close < recent_high:
+        return "SWEEP_HIGH"
 
-def confirmation_candle(df, direction):
-    last = df.iloc[-1]
+    # Sweep low and close back inside
+    if last_low < recent_low and last_close > recent_low:
+        return "SWEEP_LOW"
 
-    if direction == "BUY":
-        return last["close"] > last["open"]
-    elif direction == "SELL":
-        return last["close"] < last["open"]
-
-    return False
+    return None
 
 
-# ==============================
-# Main Strategy Function
-# ==============================
+def nearest_structure(df):
+    resistance = df["High"].iloc[-20:].max()
+    support = df["Low"].iloc[-20:].min()
+    return support, resistance
 
-def analyze(symbol):
+
+# ===============================
+# Risk Management
+# ===============================
+
+def calculate_rr(entry, sl, tp):
+    risk = abs(entry - sl)
+    reward = abs(tp - entry)
+    if risk == 0:
+        return 0
+    return reward / risk
+
+
+# ===============================
+# Main Analysis Function
+# ===============================
+
+def analyze(symbol, balance=100, risk_percent=1):
+
     try:
         # Fetch candles
-        candles_1h = get_candles(symbol, 3600)
-        candles_15m = get_candles(symbol, 900)
-        candles_5m = get_candles(symbol, 300)
-
-        if not candles_1h or not candles_15m or not candles_5m:
-            print(f"No candle data for {symbol}")
-            return None
-
-        df_1h = to_df(candles_1h)
-        df_15m = to_df(candles_15m)
-        df_5m = to_df(candles_5m)
-
-        # 1H Trend Bias
-        trend = detect_trend(df_1h)
-
-        # 15M Break of Structure
-        bos = break_of_structure(df_15m)
-
-        # Determine trade direction
-        signal = None
-
-        if trend == "BULLISH" and bos == "BULLISH_BOS":
-            signal = "BUY"
-
-        elif trend == "BEARISH" and bos == "BEARISH_BOS":
-            signal = "SELL"
-
-        if signal is None:
-            print(f"No setup for {symbol}")
-            return None
-
-        # 5M Confirmation
-        if not confirmation_candle(df_5m, signal):
-            print(f"No 5M confirmation for {symbol}")
-            return None
-
-        # Entry and Risk Management
-        entry = df_5m["close"].iloc[-1]
-
-        if signal == "BUY":
-            stop_loss = df_5m["low"].iloc[-2]
-            take_profit = entry + (entry - stop_loss) * 2  # 1:2 RR
-        else:
-            stop_loss = df_5m["high"].iloc[-2]
-            take_profit = entry - (stop_loss - entry) * 2  # 1:2 RR
-
-        return {
-            "symbol": symbol,
-            "signal": signal,
-            "entry": round(entry, 2),
-            "stop_loss": round(stop_loss, 2),
-            "take_profit": round(take_profit, 2),
-            "reason": "1H EMA trend + 15M BOS + 5M confirmation"
-        }
+        df_4h = to_df(get_candles(symbol, 14400))
+        df_1h = to_df(get_candles(symbol, 3600))
+        df_15m = to_df(get_candles(symbol, 900))
+        df_5m = to_df(get_candles(symbol, 300))
 
     except Exception as e:
-        print(f"Error analyzing {symbol}: {e}")
-        return None
+        print(f"Data error for {symbol}: {e}")
+        return {
+            "symbol": symbol,
+            "signal": "NO_TRADE"
+        }
+
+    trend_4h = detect_trend(df_4h)
+    trend_1h = detect_trend(df_1h)
+
+    if trend_4h != trend_1h:
+        print(f"Structure mismatch for {symbol}")
+        return {
+            "symbol": symbol,
+            "signal": "NO_TRADE"
+        }
+
+    entry_price = df_5m["Close"].iloc[-1]
+    sweep = liquidity_sweep(df_15m)
+    support, resistance = nearest_structure(df_15m)
+
+    score = 0
+    signal = None
+    stop_loss = None
+    take_profit = None
+
+    # ===============================
+    # BUY Setup
+    # ===============================
+    if trend_4h == "BULLISH" and sweep == "SWEEP_LOW":
+        score += 2
+
+        stop_loss = df_5m["Low"].iloc[-5:].min()
+        risk = entry_price - stop_loss
+
+        if risk > 0:
+            tp2 = entry_price + (risk * 2)
+            tp3 = entry_price + (risk * 3)
+
+            # Check if structure allows
+            if resistance > tp2:
+                take_profit = tp2
+                score += 1
+
+            if resistance > tp3:
+                take_profit = tp3
+                score += 1
+
+            signal = "BUY"
+
+    # ===============================
+    # SELL Setup
+    # ===============================
+    elif trend_4h == "BEARISH" and sweep == "SWEEP_HIGH":
+        score += 2
+
+        stop_loss = df_5m["High"].iloc[-5:].max()
+        risk = stop_loss - entry_price
+
+        if risk > 0:
+            tp2 = entry_price - (risk * 2)
+            tp3 = entry_price - (risk * 3)
+
+            if support < tp2:
+                take_profit = tp2
+                score += 1
+
+            if support < tp3:
+                take_profit = tp3
+                score += 1
+
+            signal = "SELL"
+
+    # ===============================
+    # Final Validation
+    # ===============================
+
+    if not signal or score < 3:
+        print(f"No setup for {symbol}")
+        return {
+            "symbol": symbol,
+            "signal": "NO_TRADE"
+        }
+
+    rr = calculate_rr(entry_price, stop_loss, take_profit)
+
+    if rr < 2:
+        print(f"RR too small for {symbol}")
+        return {
+            "symbol": symbol,
+            "signal": "NO_TRADE"
+        }
+
+    # Lot sizing
+    risk_amount = balance * (risk_percent / 100)
+    lot_size = risk_amount / abs(entry_price - stop_loss)
+
+    return {
+        "symbol": symbol,
+        "signal": signal,
+        "entry": round(entry_price, 2),
+        "stop_loss": round(stop_loss, 2),
+        "take_profit": round(take_profit, 2),
+        "rr": round(rr, 2),
+        "lot_size": round(lot_size, 2),
+        "reason": f"{trend_4h} + Liquidity Sweep + Structure | Score: {score}"
+    }
