@@ -1,143 +1,134 @@
 import pandas as pd
+import numpy as np
 from api import get_candles
-from utils import to_df
-
-RR_RATIO = 2.0   # 1:2 risk reward
 
 
-def add_ema(df, period=50):
-    df["ema"] = df["close"].ewm(span=period, adjust=False).mean()
+# =========================
+# INDICATORS
+# =========================
+
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def rsi(series, period=14):
+    delta = series.diff()
+
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+
+    avg_gain = pd.Series(gain).rolling(period).mean()
+    avg_loss = pd.Series(loss).rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+def to_df(candles):
+    df = pd.DataFrame(candles)
+    df = df.astype(float)
     return df
 
 
-def detect_trend(df):
-    df = add_ema(df)
-
-    if len(df) < 50:
-        return None
-
-    last_close = df["close"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-
-    if last_close > ema:
-        return "BUY"
-    elif last_close < ema:
-        return "SELL"
-
-    return None
-
-
-def momentum_confirmation(df, direction):
-    """
-    15M momentum confirmation using last 3 candles.
-    """
-    if len(df) < 5:
-        return False
-
-    last3 = df["close"].iloc[-3:]
-    opens3 = df["open"].iloc[-3:]
-
-    bullish = all(last3 > opens3)
-    bearish = all(last3 < opens3)
-
-    if direction == "BUY" and bullish:
-        return True
-
-    if direction == "SELL" and bearish:
-        return True
-
-    return False
-
-
-def micro_break(df, direction):
-    """
-    5M micro structure break
-    """
-    if len(df) < 10:
-        return False
-
-    recent_high = df["high"].iloc[-4:-1].max()
-    recent_low = df["low"].iloc[-4:-1].min()
-    last_close = df["close"].iloc[-1]
-
-    if direction == "BUY" and last_close > recent_high:
-        return True
-
-    if direction == "SELL" and last_close < recent_low:
-        return True
-
-    return False
-
-
-def calculate_trade(df, direction):
-    entry = df["close"].iloc[-1]
-
-    if direction == "BUY":
-        sl = df["low"].iloc[-4:].min()
-        risk = entry - sl
-
-        if risk <= 0:
-            return None
-
-        tp = entry + (risk * RR_RATIO)
-
-        if not (sl < entry < tp):
-            return None
-
-    elif direction == "SELL":
-        sl = df["high"].iloc[-4:].max()
-        risk = sl - entry
-
-        if risk <= 0:
-            return None
-
-        tp = entry - (risk * RR_RATIO)
-
-        if not (tp < entry < sl):
-            return None
-
-    else:
-        return None
-
-    return {
-        "signal": direction,
-        "entry": round(entry, 2),
-        "stop_loss": round(sl, 2),
-        "take_profit": round(tp, 2)
-    }
-
+# =========================
+# MAIN STRATEGY
+# =========================
 
 def analyze(symbol):
 
     try:
-        df_1h = to_df(get_candles(symbol, 3600))
-        df_15m = to_df(get_candles(symbol, 900))
-        df_5m = to_df(get_candles(symbol, 300))
+        candles_1h = to_df(get_candles(symbol, 3600))
+        candles_15m = to_df(get_candles(symbol, 900))
+        candles_5m = to_df(get_candles(symbol, 300))
     except Exception as e:
         print(f"Data error for {symbol}: {e}")
         return None
 
-    trend = detect_trend(df_1h)
-
-    if trend is None:
-        print(f"No trend for {symbol}")
+    if len(candles_1h) < 60 or len(candles_15m) < 60 or len(candles_5m) < 20:
+        print(f"Not enough data for {symbol}")
         return None
 
-    if not momentum_confirmation(df_15m, trend):
-        print(f"No momentum for {symbol}")
+    # =========================
+    # 1H TREND
+    # =========================
+
+    candles_1h["ema50"] = ema(candles_1h["close"], 50)
+
+    last_1h = candles_1h.iloc[-1]
+
+    if last_1h["close"] > last_1h["ema50"]:
+        trend = "BUY"
+    elif last_1h["close"] < last_1h["ema50"]:
+        trend = "SELL"
+    else:
+        print(f"No clear trend for {symbol}")
         return None
 
-    if not micro_break(df_5m, trend):
-        print(f"No entry trigger for {symbol}")
-        return None
+    # =========================
+    # 15M RSI PULLBACK
+    # =========================
 
-    trade = calculate_trade(df_5m, trend)
+    candles_15m["rsi"] = rsi(candles_15m["close"], 14)
 
-    if trade is None:
-        print(f"Invalid SL/TP for {symbol}")
-        return None
+    rsi_now = candles_15m["rsi"].iloc[-1]
+    rsi_prev = candles_15m["rsi"].iloc[-2]
 
-    trade["symbol"] = symbol
-    trade["reason"] = "1H Trend + 15M Momentum + 5M Micro Break"
+    if trend == "BUY":
+        if not (rsi_now < 45 and rsi_now > rsi_prev):
+            print(f"No RSI pullback for {symbol}")
+            return None
 
-    return trade
+    if trend == "SELL":
+        if not (rsi_now > 55 and rsi_now < rsi_prev):
+            print(f"No RSI pullback for {symbol}")
+            return None
+
+    # =========================
+    # 5M ENTRY CONFIRMATION
+    # =========================
+
+    last = candles_5m.iloc[-1]
+    prev = candles_5m.iloc[-2]
+
+    if trend == "BUY":
+        if last["high"] <= prev["high"]:
+            print(f"No break confirmation for {symbol}")
+            return None
+
+        entry = last["close"]
+        stop_loss = candles_5m["low"].iloc[-5:].min()
+
+        if stop_loss >= entry:
+            return None
+
+        risk = entry - stop_loss
+        take_profit = entry + (risk * 2)
+
+    else:  # SELL
+        if last["low"] >= prev["low"]:
+            print(f"No break confirmation for {symbol}")
+            return None
+
+        entry = last["close"]
+        stop_loss = candles_5m["high"].iloc[-5:].max()
+
+        if stop_loss <= entry:
+            return None
+
+        risk = stop_loss - entry
+        take_profit = entry - (risk * 2)
+
+    # =========================
+    # RETURN SIGNAL
+    # =========================
+
+    return {
+        "symbol": symbol,
+        "signal": trend,
+        "entry": round(entry, 2),
+        "stop_loss": round(stop_loss, 2),
+        "take_profit": round(take_profit, 2),
+        "reason": "1H Trend + 15M RSI Pullback + 5M Break"
+    }
