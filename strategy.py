@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
-from api import get_candles
+from deriv_api import get_candles
 
 
 # =========================
-# INDICATORS
+# Indicator Functions
 # =========================
 
 def ema(series, period):
@@ -13,149 +13,129 @@ def ema(series, period):
 
 def rsi(series, period=14):
     delta = series.diff()
-
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
 
-    avg_gain = pd.Series(gain).rolling(period).mean()
-    avg_loss = pd.Series(loss).rolling(period).mean()
+    gain_avg = pd.Series(gain).rolling(period).mean()
+    loss_avg = pd.Series(loss).rolling(period).mean()
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-
-    return rsi
+    rs = gain_avg / loss_avg
+    return 100 - (100 / (1 + rs))
 
 
-def to_df(candles):
-    df = pd.DataFrame(candles)
-    df = df.astype(float)
-    return df
+def atr(df, period=14):
+    high_low = df["high"] - df["low"]
+    high_close = np.abs(df["high"] - df["close"].shift())
+    low_close = np.abs(df["low"] - df["close"].shift())
+
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+
+    return true_range.rolling(period).mean()
 
 
 # =========================
-# MAIN STRATEGY
+# Main Analysis Function
 # =========================
 
 def analyze(symbol):
 
     try:
-        candles_4h = to_df(get_candles(symbol, 14400))
-        candles_1h = to_df(get_candles(symbol, 3600))
-        candles_15m = to_df(get_candles(symbol, 900))
-        candles_5m = to_df(get_candles(symbol, 300))
+        # Get 4H candles (trend)
+        df_4h = get_candles(symbol, granularity=14400)
+        if df_4h is None or len(df_4h) < 210:
+            print(f"Not enough 4H data for {symbol}")
+            return None
+
+        # Get 5M candles (entry)
+        df_5m = get_candles(symbol, granularity=300)
+        if df_5m is None or len(df_5m) < 210:
+            print(f"Not enough 5M data for {symbol}")
+            return None
+
     except Exception as e:
         print(f"Data error for {symbol}: {e}")
         return None
 
-    if (
-        len(candles_4h) < 60 or
-        len(candles_1h) < 60 or
-        len(candles_15m) < 60 or
-        len(candles_5m) < 20
-    ):
-        print(f"Not enough data for {symbol}")
-        return None
-
     # =========================
-    # 4H PRIMARY TREND
+    # 4H TREND
     # =========================
 
-    candles_4h["ema50"] = ema(candles_4h["close"], 50)
-    last_4h = candles_4h.iloc[-1]
+    df_4h["ema50"] = ema(df_4h["close"], 50)
+    df_4h["ema200"] = ema(df_4h["close"], 200)
 
-    if last_4h["close"] > last_4h["ema50"]:
-        trend_4h = "BUY"
-    elif last_4h["close"] < last_4h["ema50"]:
-        trend_4h = "SELL"
+    trend = None
+
+    if df_4h["ema50"].iloc[-1] > df_4h["ema200"].iloc[-1]:
+        trend = "BUY"
+    elif df_4h["ema50"].iloc[-1] < df_4h["ema200"].iloc[-1]:
+        trend = "SELL"
     else:
-        print(f"No 4H trend for {symbol}")
+        print(f"No clear 4H trend for {symbol}")
         return None
 
     # =========================
-    # 1H CONFIRMATION TREND
+    # 5M ENTRY LOGIC
     # =========================
 
-    candles_1h["ema50"] = ema(candles_1h["close"], 50)
-    last_1h = candles_1h.iloc[-1]
+    df_5m["ema20"] = ema(df_5m["close"], 20)
+    df_5m["rsi"] = rsi(df_5m["close"])
+    df_5m["atr"] = atr(df_5m)
 
-    if last_1h["close"] > last_1h["ema50"]:
-        trend_1h = "BUY"
-    elif last_1h["close"] < last_1h["ema50"]:
-        trend_1h = "SELL"
-    else:
-        print(f"No 1H trend for {symbol}")
+    last = df_5m.iloc[-1]
+    prev = df_5m.iloc[-2]
+
+    entry_price = last["close"]
+    atr_value = last["atr"]
+
+    if np.isnan(atr_value):
         return None
 
-    # Trend must match
-    if trend_4h != trend_1h:
-        print(f"Trend mismatch for {symbol}")
-        return None
-
-    trend = trend_4h
-
     # =========================
-    # 15M RSI PULLBACK
+    # BUY SETUP
     # =========================
-
-    candles_15m["rsi"] = rsi(candles_15m["close"], 14)
-
-    rsi_now = candles_15m["rsi"].iloc[-1]
-    rsi_prev = candles_15m["rsi"].iloc[-2]
 
     if trend == "BUY":
-        if not (rsi_now < 45 and rsi_now > rsi_prev):
-            print(f"No RSI pullback for {symbol}")
-            return None
+
+        pullback = last["close"] > last["ema20"] and prev["close"] <= prev["ema20"]
+        rsi_ok = 45 <= last["rsi"] <= 65
+
+        if pullback and rsi_ok:
+
+            stop_loss = entry_price - (atr_value * 1.2)
+            take_profit = entry_price + ((entry_price - stop_loss) * 3)
+
+            return {
+                "symbol": symbol,
+                "signal": "BUY",
+                "entry": round(entry_price, 2),
+                "stop_loss": round(stop_loss, 2),
+                "take_profit": round(take_profit, 2),
+                "reason": "4H Uptrend + 5M EMA Pullback + RSI Confirmation"
+            }
+
+    # =========================
+    # SELL SETUP
+    # =========================
 
     if trend == "SELL":
-        if not (rsi_now > 55 and rsi_now < rsi_prev):
-            print(f"No RSI pullback for {symbol}")
-            return None
 
-    # =========================
-    # 5M ENTRY CONFIRMATION
-    # =========================
+        pullback = last["close"] < last["ema20"] and prev["close"] >= prev["ema20"]
+        rsi_ok = 35 <= last["rsi"] <= 55
 
-    last = candles_5m.iloc[-1]
-    prev = candles_5m.iloc[-2]
+        if pullback and rsi_ok:
 
-    if trend == "BUY":
-        if last["high"] <= prev["high"]:
-            print(f"No break confirmation for {symbol}")
-            return None
+            stop_loss = entry_price + (atr_value * 1.2)
+            take_profit = entry_price - ((stop_loss - entry_price) * 3)
 
-        entry = last["close"]
-        stop_loss = candles_5m["low"].iloc[-5:].min()
+            return {
+                "symbol": symbol,
+                "signal": "SELL",
+                "entry": round(entry_price, 2),
+                "stop_loss": round(stop_loss, 2),
+                "take_profit": round(take_profit, 2),
+                "reason": "4H Downtrend + 5M EMA Pullback + RSI Confirmation"
+            }
 
-        if stop_loss >= entry:
-            return None
-
-        risk = entry - stop_loss
-        take_profit = entry + (risk * 2)
-
-    else:  # SELL
-        if last["low"] >= prev["low"]:
-            print(f"No break confirmation for {symbol}")
-            return None
-
-        entry = last["close"]
-        stop_loss = candles_5m["high"].iloc[-5:].max()
-
-        if stop_loss <= entry:
-            return None
-
-        risk = stop_loss - entry
-        take_profit = entry - (risk * 2)
-
-    # =========================
-    # FINAL SIGNAL
-    # =========================
-
-    return {
-        "symbol": symbol,
-        "signal": trend,
-        "entry": round(entry, 2),
-        "stop_loss": round(stop_loss, 2),
-        "take_profit": round(take_profit, 2),
-        "reason": "4H Trend + 1H Confirm + 15M RSI Pullback + 5M Break"
-    }
+    print(f"No setup for {symbol}")
+    return None
