@@ -39,6 +39,7 @@ def to_df(candles):
 def analyze(symbol):
 
     try:
+        candles_4h = to_df(get_candles(symbol, 14400))
         candles_1h = to_df(get_candles(symbol, 3600))
         candles_15m = to_df(get_candles(symbol, 900))
         candles_5m = to_df(get_candles(symbol, 300))
@@ -46,25 +47,51 @@ def analyze(symbol):
         print(f"Data error for {symbol}: {e}")
         return None
 
-    if len(candles_1h) < 60 or len(candles_15m) < 60 or len(candles_5m) < 20:
+    if (
+        len(candles_4h) < 60 or
+        len(candles_1h) < 60 or
+        len(candles_15m) < 60 or
+        len(candles_5m) < 20
+    ):
         print(f"Not enough data for {symbol}")
         return None
 
     # =========================
-    # 1H TREND
+    # 4H PRIMARY TREND
+    # =========================
+
+    candles_4h["ema50"] = ema(candles_4h["close"], 50)
+    last_4h = candles_4h.iloc[-1]
+
+    if last_4h["close"] > last_4h["ema50"]:
+        trend_4h = "BUY"
+    elif last_4h["close"] < last_4h["ema50"]:
+        trend_4h = "SELL"
+    else:
+        print(f"No 4H trend for {symbol}")
+        return None
+
+    # =========================
+    # 1H CONFIRMATION TREND
     # =========================
 
     candles_1h["ema50"] = ema(candles_1h["close"], 50)
-
     last_1h = candles_1h.iloc[-1]
 
     if last_1h["close"] > last_1h["ema50"]:
-        trend = "BUY"
+        trend_1h = "BUY"
     elif last_1h["close"] < last_1h["ema50"]:
-        trend = "SELL"
+        trend_1h = "SELL"
     else:
-        print(f"No clear trend for {symbol}")
+        print(f"No 1H trend for {symbol}")
         return None
+
+    # Trend must match
+    if trend_4h != trend_1h:
+        print(f"Trend mismatch for {symbol}")
+        return None
+
+    trend = trend_4h
 
     # =========================
     # 15M RSI PULLBACK
@@ -121,7 +148,7 @@ def analyze(symbol):
         take_profit = entry - (risk * 2)
 
     # =========================
-    # RETURN SIGNAL
+    # FINAL SIGNAL
     # =========================
 
     return {
@@ -130,5 +157,5 @@ def analyze(symbol):
         "entry": round(entry, 2),
         "stop_loss": round(stop_loss, 2),
         "take_profit": round(take_profit, 2),
-        "reason": "1H Trend + 15M RSI Pullback + 5M Break"
+        "reason": "4H Trend + 1H Confirm + 15M RSI Pullback + 5M Break"
     }
