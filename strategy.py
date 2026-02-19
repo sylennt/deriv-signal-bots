@@ -1,68 +1,78 @@
-import asyncio
 import pandas as pd
 from api import get_candles
 from utils import to_df
 
-RR_RATIO = 2.5        # Between 1:2 and 1:3
-SWEEP_TOLERANCE = 0.002   # 0.2% tolerance to increase frequency
+RR_RATIO = 2.5   # Between 1:2 and 1:3
+
+
+def add_ema(df, period=50):
+    df["ema"] = df["close"].ewm(span=period, adjust=False).mean()
+    return df
 
 
 def detect_trend(df):
     """
-    1H trend detection using swing structure.
+    1H trend bias using EMA + structure.
     """
-    if len(df) < 50:
-        return None
+    df = add_ema(df)
 
-    recent = df.tail(30)
+    last_close = df["close"].iloc[-1]
+    ema = df["ema"].iloc[-1]
 
-    higher_high = recent["high"].iloc[-1] > recent["high"].iloc[-10]
-    higher_low = recent["low"].iloc[-1] > recent["low"].iloc[-10]
-
-    lower_high = recent["high"].iloc[-1] < recent["high"].iloc[-10]
-    lower_low = recent["low"].iloc[-1] < recent["low"].iloc[-10]
-
-    if higher_high and higher_low:
+    if last_close > ema:
         return "BUY"
-
-    if lower_high and lower_low:
+    elif last_close < ema:
         return "SELL"
 
     return None
 
 
-def liquidity_sweep(df):
+def pullback_confirmation(df, direction):
     """
-    Softer liquidity sweep logic for medium frequency.
+    15M pullback into EMA zone.
     """
-    if len(df) < 30:
-        return None
+    df = add_ema(df)
 
-    recent_high = df["high"].iloc[-15:-1].max()
-    recent_low = df["low"].iloc[-15:-1].min()
+    last_close = df["close"].iloc[-1]
+    ema = df["ema"].iloc[-1]
 
-    last_candle = df.iloc[-1]
+    # Allow small tolerance to increase frequency
+    tolerance = ema * 0.002
 
-    # BUY sweep (stop hunt below lows)
-    if (
-        last_candle["low"] <= recent_low * (1 + SWEEP_TOLERANCE)
-        and last_candle["close"] > recent_low
-    ):
-        return "BUY"
+    if direction == "BUY":
+        if last_close <= ema + tolerance:
+            return True
 
-    # SELL sweep (stop hunt above highs)
-    if (
-        last_candle["high"] >= recent_high * (1 - SWEEP_TOLERANCE)
-        and last_candle["close"] < recent_high
-    ):
-        return "SELL"
+    if direction == "SELL":
+        if last_close >= ema - tolerance:
+            return True
 
-    return None
+    return False
+
+
+def break_of_structure(df, direction):
+    """
+    5M entry trigger using minor structure break.
+    """
+    if len(df) < 20:
+        return False
+
+    recent_high = df["high"].iloc[-6:-1].max()
+    recent_low = df["low"].iloc[-6:-1].min()
+    last_close = df["close"].iloc[-1]
+
+    if direction == "BUY" and last_close > recent_high:
+        return True
+
+    if direction == "SELL" and last_close < recent_low:
+        return True
+
+    return False
 
 
 def calculate_trade(df, direction):
     """
-    Calculates entry, SL and TP with proper alignment.
+    Calculates entry, SL and TP safely.
     """
     entry = df["close"].iloc[-1]
 
@@ -71,19 +81,18 @@ def calculate_trade(df, direction):
         risk = entry - sl
         tp = entry + (risk * RR_RATIO)
 
+        if not (sl < entry < tp):
+            return None
+
     elif direction == "SELL":
         sl = df["high"].iloc[-5:].max()
         risk = sl - entry
         tp = entry - (risk * RR_RATIO)
 
+        if not (tp < entry < sl):
+            return None
+
     else:
-        return None
-
-    # Safety check to prevent wrong SL/TP direction
-    if direction == "BUY" and not (sl < entry < tp):
-        return None
-
-    if direction == "SELL" and not (tp < entry < sl):
         return None
 
     return {
@@ -96,21 +105,16 @@ def calculate_trade(df, direction):
 
 def analyze(symbol):
     """
-    Multi-timeframe strategy:
-    1H trend bias
-    15M liquidity sweep zone
-    5M entry trigger
+    Multi-timeframe system:
+    1H trend
+    15M pullback
+    5M break of structure
     """
 
     try:
-        candles_1h = get_candles(symbol, 3600)
-        candles_15m = get_candles(symbol, 900)
-        candles_5m = get_candles(symbol, 300)
-
-        df_1h = to_df(candles_1h)
-        df_15m = to_df(candles_15m)
-        df_5m = to_df(candles_5m)
-
+        df_1h = to_df(get_candles(symbol, 3600))
+        df_15m = to_df(get_candles(symbol, 900))
+        df_5m = to_df(get_candles(symbol, 300))
     except Exception as e:
         print(f"Data error for {symbol}: {e}")
         return None
@@ -121,25 +125,21 @@ def analyze(symbol):
         print(f"No clear trend for {symbol}")
         return None
 
-    sweep = liquidity_sweep(df_15m)
-
-    if sweep is None:
-        print(f"No liquidity sweep for {symbol}")
+    if not pullback_confirmation(df_15m, trend):
+        print(f"No pullback for {symbol}")
         return None
 
-    # Trend must match sweep direction
-    if trend != sweep:
-        print(f"Structure mismatch for {symbol}")
+    if not break_of_structure(df_5m, trend):
+        print(f"No entry trigger for {symbol}")
         return None
 
     trade = calculate_trade(df_5m, trend)
 
     if trade is None:
-        print(f"Invalid SL/TP setup for {symbol}")
+        print(f"Invalid SL/TP for {symbol}")
         return None
 
     trade["symbol"] = symbol
-    trade["reason"] = "1H Trend + 15M Sweep + 5M Entry"
+    trade["reason"] = "1H EMA Trend + 15M Pullback + 5M BOS"
 
     return trade
-
