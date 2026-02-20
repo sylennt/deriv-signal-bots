@@ -82,69 +82,54 @@ def entry_signal(df, trend):
 
 def analyze(symbol):
 
-    # ---- Fetch Data ----
-    df_4h = get_candles(symbol, 14400, 100)
-    df_1h = get_candles(symbol, 3600, 150)
-    df_15m = get_candles(symbol, 900, 200)
+    trend = get_trend(symbol)
+    df = get_lower_tf_data(symbol)
 
-    if df_4h is None or len(df_4h) < 50:
-        print(f"Not enough 4H data for {symbol}")
-        return None
-
-    if df_1h is None or len(df_1h) < 50:
-        print(f"Not enough 1H data for {symbol}")
-        return None
-
-    if df_15m is None or len(df_15m) < 50:
-        print(f"Not enough 15M data for {symbol}")
-        return None
-
-    # ---- Trend ----
-    trend = get_trend(df_4h)
-
-    if trend == "RANGE":
-        print(f"Ranging market for {symbol}")
-        return None
-
-    # ---- Structure ----
-    if not structure_confirm(df_1h, trend):
-        print(f"Structure mismatch for {symbol}")
-        return None
-
-    # ---- Entry ----
-    signal, entry_price = entry_signal(df_15m, trend)
-
-    if not signal:
+    if df is None or len(df) < 50:
         print(f"No setup for {symbol}")
         return None
 
-    # ---- Stop Loss & Take Profit (1:3 RR) ----
-    recent_high = df_15m["high"].rolling(20).max().iloc[-1]
-    recent_low = df_15m["low"].rolling(20).min().iloc[-1]
+    rsi = calculate_rsi(df['close'])
+
+    last_close = df['close'].iloc[-1]
+    last_rsi = rsi.iloc[-1]
+
+    signal = None
+
+    # BUY condition
+    if trend == "BULLISH" and last_rsi < 35:
+        signal = "BUY"
+
+    # SELL condition
+    elif trend == "BEARISH" and last_rsi > 65:
+        signal = "SELL"
+
+    if signal is None:
+        print(f"No setup for {symbol}")
+        return None
+
+    # Risk management 1:3 RR
+    risk = df['close'].rolling(10).std().iloc[-1]
 
     if signal == "BUY":
-        stop_loss = recent_low
-        risk = entry_price - stop_loss
+        entry_price = last_close
+        stop_loss = entry_price - risk
         take_profit = entry_price + (risk * 3)
 
-        if stop_loss >= entry_price:
-            return None
-
-    else:  # SELL
-        stop_loss = recent_high
-        risk = stop_loss - entry_price
+    else:
+        entry_price = last_close
+        stop_loss = entry_price + risk
         take_profit = entry_price - (risk * 3)
 
-        if stop_loss <= entry_price:
-            return None
+    print(f"Signal found for {symbol}")
 
-   return {
-    "symbol": symbol,
-    "signal": signal,
-    "entry": round(entry_price, 2),
-    "stop_loss": round(stop_loss, 2),
-    "take_profit": round(take_profit, 2),
-    "trend": trend,
-    "rr": "1:3",
-    "reason": f"{trend} trend + 15M RSI pullback"
-}
+    return {
+        "symbol": symbol,
+        "signal": signal,
+        "entry": round(entry_price, 2),
+        "stop_loss": round(stop_loss, 2),
+        "take_profit": round(take_profit, 2),
+        "trend": trend,
+        "rr": "1:3",
+        "reason": f"{trend} trend + RSI pullback"
+    }
