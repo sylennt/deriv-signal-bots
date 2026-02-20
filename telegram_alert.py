@@ -12,14 +12,16 @@ def send_telegram_alert(trade):
 
     symbol = trade.get("symbol", "UNKNOWN")
 
-    message = (
-        f"📊 Pair: {symbol}\n"
-        f"Signal: {trade['signal']}\n"
-        f"Entry: {trade['entry']}\n"
-        f"Stop Loss: {trade['stop_loss']}\n"
-        f"Take Profit: {trade['take_profit']}\n"
-        f"Reason: {trade['reason']}"
-    )
+   message = (
+    f"PAIR: {trade['symbol']}\n"
+    f"Signal: {trade['signal']}\n"
+    f"Trend: {trade['trend']}\n"
+    f"Entry: {trade['entry']}\n"
+    f"Stop Loss: {trade['stop_loss']}\n"
+    f"Take Profit: {trade['take_profit']}\n"
+    f"Risk-Reward: {trade['rr']}\n"
+    f"Reason: {trade['reason']}"
+)
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
