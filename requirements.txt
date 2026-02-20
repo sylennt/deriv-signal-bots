@@ -1,5 +1,5 @@
 requests
-websocket-client
+websockets
 pandas
 numpy
 
