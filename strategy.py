@@ -138,12 +138,13 @@ def analyze(symbol):
         if stop_loss <= entry_price:
             return None
 
-    return {
-        "symbol": symbol,
-        "signal": signal,
-        "entry": round(entry_price, 2),
-        "stop_loss": round(stop_loss, 2),
-        "take_profit": round(take_profit, 2),
-        "trend": trend,
-        "rr": "1:3"
-    }
+   return {
+    "symbol": symbol,
+    "signal": signal,
+    "entry": round(entry_price, 2),
+    "stop_loss": round(stop_loss, 2),
+    "take_profit": round(take_profit, 2),
+    "trend": trend,
+    "rr": "1:3",
+    "reason": f"{trend} trend + 15M RSI pullback"
+}
